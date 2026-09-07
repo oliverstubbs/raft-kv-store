@@ -1,0 +1,25 @@
+services:
+  node1:
+    build: .
+    container_name: node1
+    ports:
+      - "8001:8000"
+    volumes:
+      - node1_data:/data
+    environment:
+      NODE_ID: 1
+      PORT: 8001
+  node2:
+    build: .
+    container_name: node2
+    ports:
+      - "8002:8000"
+    volumes:
+      - node2_data:/data
+    environment:
+      NODE_ID: 2
+      PORT: 8002
+
+volumes:
+  node1_data:
+  node2_data:
