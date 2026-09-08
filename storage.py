@@ -1,6 +1,5 @@
 import json
-from typing import List
-from models import LogEntry
+from models import RaftState, LogEntry
 
 
 class Storage:
@@ -8,8 +7,9 @@ class Storage:
         self.data_filepath = data_filepath
         self.state_filepath = state_filepath
         self.data = {}
-        self.log: List[LogEntry] = []
-        self.lastIndex = 0  # index starts at 1
+        
+        # Persistent state
+        self.state = RaftState()
         self.load()
 
     def load(self):
@@ -20,13 +20,10 @@ class Storage:
             self.data = {}
         try:
             with open(self.state_filepath, 'r') as f:
-                state = json.load(f)
-                self.log = [LogEntry.model_validate(entry) for entry in state["log"]]
-                self.lastIndex = self.log[-1].index if self.log else 0
+                state_data = json.load(f)
+                self.state = RaftState.model_validate(state_data)
         except (FileNotFoundError, json.JSONDecodeError, KeyError):
-            self.log = []
-            self.lastIndex = 0
-            # will later include current term and votes
+            self.state = RaftState()
 
 
     def save_data(self):
@@ -35,8 +32,7 @@ class Storage:
 
     def save_state(self):
         with open(self.state_filepath, 'w') as f:
-            log_data = [entry.model_dump() for entry in self.log]
-            json.dump({"log": log_data}, f)
+            json.dump(self.state.model_dump(), f)
     
     # update data store
 
@@ -61,12 +57,25 @@ class Storage:
     # state store methods
 
     def get_log(self):
-        return self.log
-    
-    def get_lastIndex(self):
-        return self.lastIndex
+        return self.state.log
 
-    def append_log(self, entry: LogEntry):
-        self.log.append(entry)
-        self.lastIndex = self.lastIndex + 1
+    def get_last_index(self):
+        return self.state.log[-1].index if self.state.log else 0
+
+    def append_entry(self, entry: LogEntry):
+        self.state.log.append(entry)
+        self.save_state()
+
+    def get_current_term(self):
+        return self.state.current_term
+
+    def set_current_term(self, term: int):
+        self.state.current_term = term
+        self.save_state()
+
+    def get_voted_for(self):
+        return self.state.voted_for
+
+    def set_voted_for(self, candidate_id: str | None):
+        self.state.voted_for = candidate_id
         self.save_state()

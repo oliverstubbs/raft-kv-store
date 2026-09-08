@@ -1,15 +1,13 @@
 # To Do List :)
 
-#### Doing
-- Add log storage
-- Pydantic models
-- Error handling of files
-- Add temporary /log endpoint for inspections
+#### Done
+- Persistent & volatile state with RaftState model
+- RaftNode class with state machine
+- RPC models (RequestVote, AppendEntries)
 
 #### Next
-- Persistant state & Volatile state
-- Node states
-- Leader elections
+- Election timeout & heartbeat timers
+- Leader election logic
 
 #### Later
 - Turn uvicorn auto reload off in the docker containers
