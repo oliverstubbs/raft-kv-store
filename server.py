@@ -1,8 +1,13 @@
 from fastapi import FastAPI
-import json
+from storage import Storage
+from models import Operation, LogEntry
 
 server = FastAPI()
-storage = {}
+storage = Storage(data_filepath='/data/storage.json', state_filepath='/data/raft_state.json')
+term = 1 # temp
+
+def appendLog(op: Operation):
+    storage.append_log(LogEntry(index=storage.get_lastIndex() + 1, term=term, operation=op))
 
 @server.get("/")
 def read_root():
@@ -10,36 +15,31 @@ def read_root():
 
 @server.get("/value/{key}")
 def get_value(key: str):
-    val = None
-    if key in storage:
-        val = storage[key]
+    val = storage.get_value(key)
     return {"key": key, "value": val}
 
 @server.put("/value/{key}")
 def set_value(key: str, value: str):
-    old_val = storage.get(key)
-    storage[key] = value
-    writeToDisk()
+    # append log
+    appendLog(Operation(type="PUT", key=key, value=value))
+
+    # update data store
+    old_val = storage.get_value(key)
+    storage.set_value(key, value)
     return {"key": key, "new_value": value, "old_value": old_val}
 
 @server.delete("/value/{key}")
 def delete_value(key: str):
-    old_val = storage.pop(key)
-    writeToDisk()
+    # append log
+    appendLog(Operation(type="DELETE", key=key))
+        
+    old_val = storage.delete_value(key)
     return {"key": key, "old_value": old_val}
 
 @server.get("/entrySet")
 def get_entrySet():
-    return storage
+    return storage.get_all_values()
 
-
-def readFromDisk():
-    global storage
-    with open('storage.json', 'r') as f:
-        storage = json.load(f)
-
-def writeToDisk():
-    with open ('storage.json', 'w') as f:
-        json.dump(storage, f)
-        
-readFromDisk()
+@server.get("/temp/log")
+def get_log():
+    return storage.get_log()
