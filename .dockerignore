@@ -1,0 +1,12 @@
+.venv/
+venv/
+
+__pycache__/
+*.pyc
+
+.git/
+.gitignore
+
+# runtime data lives in the /data volume
+storage.json
+raft_state.json

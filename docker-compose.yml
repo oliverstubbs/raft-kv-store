@@ -9,7 +9,7 @@ services:
       - node1_data:/data
     environment:
       NODE_ID: 1
-      PORT: 8001
+      PEERS: node2:8000,node3:8000
   node2:
     build: .
     container_name: node2
@@ -20,8 +20,20 @@ services:
       - node2_data:/data
     environment:
       NODE_ID: 2
-      PORT: 8002
+      PEERS: node1:8000,node3:8000
+  node3:
+    build: .
+    container_name: node3
+    ports:
+      - "8003:8000"
+    volumes:
+      - .:/app
+      - node3_data:/data
+    environment:
+      NODE_ID: 3
+      PEERS: node1:8000,node2:8000
 
 volumes:
   node1_data:
   node2_data:
+  node3_data:

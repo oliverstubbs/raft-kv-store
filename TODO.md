@@ -1,9 +1,8 @@
 # To Do List :)
 
 #### Done
-- Persistent & volatile state with RaftState model
-- RaftNode class with state machine
-- RPC models (RequestVote, AppendEntries)
+- Added third node to config
+- Fixed docker build config bug
 
 #### Next
 - Election timeout & heartbeat timers

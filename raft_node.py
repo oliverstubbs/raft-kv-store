@@ -1,10 +1,16 @@
+import os
+
 from models import NodeState, Operation, LogEntry
 from storage import Storage
 
 class RaftNode:
     def __init__(self, node_id: str):
         self.node_id = node_id
-        self.state = NodeState.Follower
+        self.state = NodeState.FOLLOWER
+
+        # cluster membership
+        self.peers = [p for p in os.getenv("PEERS", "").split(",") if p]
+        print(f"node {self.node_id} peers: {self.peers}") # temp to check works
         
         # persistent state 
         self.storage = Storage(data_filepath='/data/storage.json', state_filepath='/data/raft_state.json')
@@ -47,7 +53,7 @@ class RaftNode:
         return self.storage.get_log()
 
     def append_log(self, op: Operation):
-        self.storage.append_log(LogEntry(
+        self.storage.append_entry(LogEntry(
                 index = self.get_last_index() + 1, 
                 term = self.storage.get_current_term(), 
                 operation = op
