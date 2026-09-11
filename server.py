@@ -57,4 +57,7 @@ async def request_vote(request: RequestVoteRequest) -> RequestVoteResponse:
 
 @server.post("/append_entries")
 async def append_entries(request: AppendEntriesRequest) -> AppendEntriesResponse:
-    return
+    raft_node.reset_election_timer()
+    
+    # temp for heartbeat
+    return AppendEntriesResponse(term=raft_node.storage.get_current_term(), success=True)
