@@ -1,11 +1,28 @@
 import os
+import asyncio
+
 from fastapi import FastAPI
+from contextlib import asynccontextmanager
+
 from raft_node import RaftNode
 from models import AppendEntriesRequest, AppendEntriesResponse, RequestVoteRequest, RequestVoteResponse
 
-server = FastAPI()
-node_id = os.getenv("NODE_ID", "node1")
+node_id = os.getenv("NODE_ID", "node")
 raft_node = RaftNode(node_id=node_id)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # on startup start raft node loop
+    node_loop = asyncio.create_task(raft_node.run_node())
+    yield
+    # on shutdown try stop the loop
+    node_loop.cancel()
+    try:
+        await node_loop
+    except asyncio.CancelledError:
+        print("Shutdown complete.")
+    
+server = FastAPI(lifespan=lifespan)
 
 @server.get("/")
 def read_root():

@@ -1,4 +1,7 @@
 import os
+import random
+import time
+import asyncio
 
 from models import NodeState, Operation, LogEntry
 from storage import Storage
@@ -10,7 +13,6 @@ class RaftNode:
 
         # cluster membership
         self.peers = [p for p in os.getenv("PEERS", "").split(",") if p]
-        print(f"node {self.node_id} peers: {self.peers}") # temp to check works
         
         # persistent state 
         self.storage = Storage(data_filepath='/data/storage.json', state_filepath='/data/raft_state.json')
@@ -22,6 +24,12 @@ class RaftNode:
         # volatile state (on leaders)
         self.next_index = None
         self.match_index = None
+        
+        # timers for election
+        self.election_time_limit = 0
+        self.election_time_min = 0.15
+        self.election_time_max = 0.3
+        
 
     # data store operations
     
@@ -49,6 +57,7 @@ class RaftNode:
         return self.storage.get_all_values()
 
     # log operations
+    
     def get_log(self):
         return self.storage.get_log()
 
@@ -61,3 +70,23 @@ class RaftNode:
 
     def get_last_index(self):
         return self.storage.get_last_index()
+    
+    # election operations
+    
+    def reset_election_timer(self):
+        self.election_time_limit = time.monotonic() + random.uniform(self.election_time_min, self.election_time_max)
+        
+    async def run_node(self):
+        self.reset_election_timer()
+        
+        while True:
+            # handle transition to CANDIDATE state
+            if(time.monotonic() > self.election_time_limit):
+                print(f"{self.node_id}: transition to candidate")
+                self.state = NodeState.CANDIDATE
+                self.storage.increment_current_term()
+                self.storage.set_voted_for(self.node_id)
+                self.reset_election_timer()
+                # send vote requests to all other servers
+                
+            await asyncio.sleep(0.01)

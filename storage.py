@@ -72,6 +72,10 @@ class Storage:
     def set_current_term(self, term: int):
         self.state.current_term = term
         self.save_state()
+        
+    def increment_current_term(self):
+        self.state.current_term += 1
+        self.save_state()
 
     def get_voted_for(self):
         return self.state.voted_for
