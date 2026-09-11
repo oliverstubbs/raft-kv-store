@@ -52,9 +52,9 @@ def get_log():
     return raft_node.get_log()
 
 @server.post("/request_vote")
-def request_vote(request: RequestVoteRequest) -> RequestVoteResponse:
-    return
+async def request_vote(request: RequestVoteRequest) -> RequestVoteResponse:
+    return raft_node.handle_vote_request(request)
 
 @server.post("/append_entries")
-def append_entries(request: AppendEntriesRequest) -> AppendEntriesResponse:
+async def append_entries(request: AppendEntriesRequest) -> AppendEntriesResponse:
     return

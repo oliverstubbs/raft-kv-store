@@ -61,6 +61,9 @@ class Storage:
 
     def get_last_index(self):
         return self.state.log[-1].index if self.state.log else 0
+    
+    def get_last_term(self):
+        return self.state.log[-1].term if self.state.log else 0
 
     def append_entry(self, entry: LogEntry):
         self.state.log.append(entry)

@@ -3,7 +3,7 @@ import random
 import time
 import asyncio
 
-from models import NodeState, Operation, LogEntry
+from models import NodeState, Operation, LogEntry, RequestVoteRequest, RequestVoteResponse
 from storage import Storage
 
 class RaftNode:
@@ -82,7 +82,7 @@ class RaftNode:
         while True:
             # handle transition to CANDIDATE state
             if(time.monotonic() > self.election_time_limit):
-                print(f"{self.node_id}: transition to candidate")
+                print(f"node {self.node_id}: transition to candidate")
                 self.state = NodeState.CANDIDATE
                 self.storage.increment_current_term()
                 self.storage.set_voted_for(self.node_id)
@@ -90,3 +90,35 @@ class RaftNode:
                 # send vote requests to all other servers
                 
             await asyncio.sleep(0.01)
+            
+    def handle_vote_request(self, req: RequestVoteRequest) -> RequestVoteResponse:
+        current_term = self.storage.get_current_term()
+        if(req.term < current_term):
+            print(f"node {self.node_id}: term is greater than {req.candidate_id}, vote request rejected")
+            return RequestVoteResponse(term=current_term, vote_granted=False)
+
+        # behind - update term and become follower
+        if(req.term > current_term):
+            current_term = req.term
+            self.storage.set_current_term(current_term)
+            self.storage.set_voted_for(None)
+            self.state = NodeState.FOLLOWER
+            print(f"node {self.node_id}: term is behind - transitioning to FOLLOWER")
+        
+        if self.can_vote_for(req) and self.log_up_to_date(req):
+            self.storage.set_voted_for(req.candidate_id)
+            self.reset_election_timer()
+            print(f"node {self.node_id}: voted for {req.candidate_id}")
+            return RequestVoteResponse(term=current_term, vote_granted=True)
+        else:
+            print(f"node {self.node_id}: did not vote for {req.candidate_id}")
+            return RequestVoteResponse(term=current_term, vote_granted=False)
+    
+    def can_vote_for(self, req: RequestVoteRequest) -> bool:
+        voted_for = self.storage.get_voted_for()
+        return voted_for is None or voted_for == req.candidate_id
+    
+    def log_up_to_date(self, req: RequestVoteRequest) -> bool:
+        last_log_term = self.storage.get_last_term()
+        last_log_index = self.storage.get_last_index()
+        return (req.last_log_term > last_log_term or (req.last_log_term == last_log_term and req.last_log_index >= last_log_index))
