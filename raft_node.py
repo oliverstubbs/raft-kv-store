@@ -77,40 +77,63 @@ class RaftNode:
     
     def reset_election_timer(self):
         self.election_time_limit = time.monotonic() + random.uniform(self.election_time_min, self.election_time_max)
-        
+
+    def step_down(self, term: int):
+        # adopt a newer term seen from a peer and revert to follower
+        self.storage.set_current_term(term)
+        self.storage.set_voted_for(None)
+        self.state = NodeState.FOLLOWER
+        self.next_index = None
+        self.match_index = None
+
+    def become_leader(self):
+        self.state = NodeState.LEADER
+        print(f"node {self.node_id}: transition to LEADER. I AM LEADER!!!!")
+        # re-initialise volatile state on leaders
+        self.next_index = {peer: self.get_last_index() + 1 for peer in self.peers}
+        self.match_index = {peer: 0 for peer in self.peers}
+
+    def election_timed_out(self) -> bool:
+        return time.monotonic() > self.election_time_limit
+
+    async def run_election(self):
+        print(f"node {self.node_id}: transition to candidate")
+        self.state = NodeState.CANDIDATE
+        self.storage.increment_current_term()
+        self.storage.set_voted_for(self.node_id)
+        self.reset_election_timer()
+
+        # send vote requests to all other servers
+        responses = await self.send_vote_requests()
+
+        # check if any peer is on a higher term, if so then we are behind and should step down
+        highest_term = max((res.term for res in responses), default=0)
+        if highest_term > self.storage.get_current_term():
+            print(f"node {self.node_id}: saw term {highest_term} in a vote response - stepping down")
+            self.step_down(highest_term)
+            return
+
+        # check if have maj of votes to become leader
+        votes = sum(1 for res in responses if res.vote_granted)
+        if votes + 1 > (len(self.peers) + 1) // 2: # +1 for this node's vote for itself
+            self.become_leader()
+
     async def run_node(self):
         self.reset_election_timer()
-        
+
         while True:
             # if leader send heartbeats
             if self.state == NodeState.LEADER:
                 await self.send_heartbeat()
                 await asyncio.sleep(self.heartbeat_interval)
                 continue
-            
+
             # handle transition to CANDIDATE state
-            if(time.monotonic() > self.election_time_limit):
-                print(f"node {self.node_id}: transition to candidate")
-                self.state = NodeState.CANDIDATE
-                self.storage.increment_current_term()
-                self.storage.set_voted_for(self.node_id)
-                self.reset_election_timer()
-                
-                # send vote requests to all other servers
-                responses = await self.send_vote_requests()
-                
-                # check if have maj of votes to become leader
-                votes = sum(1 for res in responses if res.vote_granted)
-                if votes + 1 > (len(self.peers) + 1) // 2:
-                    # has majority votes so becomes leader
-                    self.state = NodeState.LEADER
-                    print(f"node {self.node_id}: transition to LEADER. I AM LEADER!!!!")
-                    # re-initialise volatile state on leaders
-                    self.next_index = {peer: self.get_last_index() + 1 for peer in self.peers}
-                    self.match_index = {peer: 0 for peer in self.peers}
+            if self.election_timed_out():
+                await self.run_election()
 
             await asyncio.sleep(0.01)
-         
+
     async def send_heartbeat(self):
         empty_RPC = AppendEntriesRequest(
             term = self.storage.get_current_term(),
@@ -139,9 +162,7 @@ class RaftNode:
         # behind - update term and become follower
         if(req.term > current_term):
             current_term = req.term
-            self.storage.set_current_term(current_term)
-            self.storage.set_voted_for(None)
-            self.state = NodeState.FOLLOWER
+            self.step_down(current_term)
             print(f"node {self.node_id}: term is behind - transitioning to FOLLOWER")
         
         if self.can_vote_for(req) and self.log_up_to_date(req):
