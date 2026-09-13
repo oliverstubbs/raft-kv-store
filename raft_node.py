@@ -4,7 +4,7 @@ import time
 import asyncio
 import httpx
 
-from models import AppendEntriesRequest, NodeState, Operation, LogEntry, RequestVoteRequest, RequestVoteResponse
+from models import AppendEntriesRequest, AppendEntriesResponse, NodeState, Operation, LogEntry, RequestVoteRequest, RequestVoteResponse
 from storage import Storage
 
 class RaftNode:
@@ -21,6 +21,9 @@ class RaftNode:
         # volatile state (on all servers)
         self.commit_index: int = 0
         self.last_applied: int = 0
+
+        # last leader
+        self.leader_id: str | None = None
         
         # volatile state (on leaders)
         self.next_index = None
@@ -31,6 +34,7 @@ class RaftNode:
         self.election_time_min = 0.15
         self.election_time_max = 0.3
         self.heartbeat_interval = 0.05
+        self.rpc_timeout = 0.1
         
 
     # data store operations
@@ -83,11 +87,13 @@ class RaftNode:
         self.storage.set_current_term(term)
         self.storage.set_voted_for(None)
         self.state = NodeState.FOLLOWER
+        self.leader_id = None
         self.next_index = None
         self.match_index = None
 
     def become_leader(self):
         self.state = NodeState.LEADER
+        self.leader_id = self.node_id
         print(f"node {self.node_id}: transition to LEADER. I AM LEADER!!!!")
         # re-initialise volatile state on leaders
         self.next_index = {peer: self.get_last_index() + 1 for peer in self.peers}
@@ -102,9 +108,15 @@ class RaftNode:
         self.storage.increment_current_term()
         self.storage.set_voted_for(self.node_id)
         self.reset_election_timer()
+        term = self.storage.get_current_term()
 
         # send vote requests to all other servers
         responses = await self.send_vote_requests()
+
+        # check still valid to become leader
+        if self.state != NodeState.CANDIDATE or self.storage.get_current_term() != term:
+            print(f"node {self.node_id}: no longer a candidate for term {term} - abandoning election")
+            return
 
         # check if any peer is on a higher term, if so then we are behind and should step down
         highest_term = max((res.term for res in responses), default=0)
@@ -145,13 +157,28 @@ class RaftNode:
         )
         json = empty_RPC.model_dump()
         
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=self.rpc_timeout) as client:
             requests = [
                 client.post(f"http://{peer}/append_entries", json=json)
                 for peer in self.peers 
             ]
-            await asyncio.gather(*requests, return_exceptions=True)
-        
+            responses = await asyncio.gather(*requests, return_exceptions=True)
+            
+            # filter out peers that don't respond, check if any 
+            for res in responses:
+                if isinstance(res, BaseException):
+                    continue
+                
+                data = AppendEntriesResponse(**res.raise_for_status().json())
+                if self.step_down_if_behind(data.term):
+                    break
+    
+    def step_down_if_behind(self, req_term: int) -> bool:
+        if(req_term > self.storage.get_current_term()):
+            self.step_down(req_term)
+            print(f"node {self.node_id}: term is behind - transitioning to FOLLOWER")
+            return True
+        return False
        
     def handle_vote_request(self, req: RequestVoteRequest) -> RequestVoteResponse:
         current_term = self.storage.get_current_term()
@@ -159,20 +186,17 @@ class RaftNode:
             print(f"node {self.node_id}: term is greater than {req.candidate_id}, vote request rejected")
             return RequestVoteResponse(term=current_term, vote_granted=False)
 
-        # behind - update term and become follower
-        if(req.term > current_term):
-            current_term = req.term
-            self.step_down(current_term)
-            print(f"node {self.node_id}: term is behind - transitioning to FOLLOWER")
+        # check if behind - update term and become follower
+        self.step_down_if_behind(req.term)
         
         if self.can_vote_for(req) and self.log_up_to_date(req):
             self.storage.set_voted_for(req.candidate_id)
             self.reset_election_timer()
             print(f"node {self.node_id}: voted for {req.candidate_id}")
-            return RequestVoteResponse(term=current_term, vote_granted=True)
+            return RequestVoteResponse(term=self.storage.get_current_term(), vote_granted=True)
         else:
             print(f"node {self.node_id}: did not vote for {req.candidate_id}")
-            return RequestVoteResponse(term=current_term, vote_granted=False)
+            return RequestVoteResponse(term=self.storage.get_current_term(), vote_granted=False)
     
     def can_vote_for(self, req: RequestVoteRequest) -> bool:
         voted_for = self.storage.get_voted_for()
@@ -192,7 +216,7 @@ class RaftNode:
         )
         json = req.model_dump()
         
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=self.rpc_timeout) as client:
             requests = [
                 client.post(f"http://{peer}/request_vote", json=json)
                 for peer in self.peers 
@@ -206,3 +230,18 @@ class RaftNode:
                     continue
                 votes.append(RequestVoteResponse(**res.raise_for_status().json()))
             return votes    
+        
+    def handle_append_entries(self, req: AppendEntriesRequest) -> AppendEntriesResponse:
+        current_term = self.storage.get_current_term()
+        if req.term < current_term:
+            return AppendEntriesResponse(term=current_term, success=False)
+        
+        self.step_down_if_behind(req.term)
+        
+        # if was a candidate and heard from a leader, step down
+        if self.state == NodeState.CANDIDATE:
+            self.state = NodeState.FOLLOWER
+        
+        self.leader_id = req.leader_id
+        self.reset_election_timer()
+        return AppendEntriesResponse(term=self.storage.get_current_term(), success=True)
