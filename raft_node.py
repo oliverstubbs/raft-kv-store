@@ -171,21 +171,29 @@ class RaftNode:
 
     async def send_heartbeat(self):
         async with httpx.AsyncClient(timeout=self.rpc_timeout) as client:
-            requests = []
-            for peer in self.peers:
-                filled_RPC = self.build_append_entries(peer)
-                requests.append(client.post(f"http://{peer}/append_entries", json=filled_RPC.model_dump()))
-
-            responses = await asyncio.gather(*requests, return_exceptions=True)
-            
-            # filter out peers that don't respond, check if any 
-            for res in responses:
-                if isinstance(res, BaseException):
-                    continue
+            await asyncio.gather(*(self.send_log(peer, client) for peer in self.peers))
                 
-                data = AppendEntriesResponse(**res.raise_for_status().json())
-                if self.step_down_if_behind(data.term):
-                    break
+    async def send_log(self, peer: str, client: httpx.AsyncClient):
+        filled_RPC = self.build_append_entries(peer)
+        
+        try:
+            res = await client.post(f"http://{peer}/append_entries", json=filled_RPC.model_dump())
+            data = AppendEntriesResponse(**res.raise_for_status().json())
+        except httpx.HTTPError:
+            return
+        
+        if self.step_down_if_behind(data.term) or self.state != NodeState.LEADER:
+            return 
+        
+        # if successful then update next_index and match_index
+        if data.success:
+            last_sent = filled_RPC.prev_log_index + len(filled_RPC.entries)
+            self.next_index[peer] = last_sent + 1
+            self.match_index[peer] = last_sent
+        # if fails, decrement next_index and try again
+        else: 
+            self.next_index[peer] = max(1, self.next_index[peer] -1)
+        
     
     def step_down_if_behind(self, req_term: int) -> bool:
         if(req_term > self.storage.get_current_term()):
