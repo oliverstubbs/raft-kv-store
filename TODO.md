@@ -1,17 +1,16 @@
 # To Do List :)
 
 #### Done
-- Actually handle the /append_entries route
-- Leader steps down when a reply carries a higher term
-- Candidate steps down when a vote response has a higher term
-- Candidate steps down when it hears from a leader on the same term
-- Track leader_id so can redirect requests
-- Add timeout to http peer requests
+- Leader now appends to its log only and leaves its data store (for now)
+- Heartbeats carry real entries from next_index
+- Followers will update its own log from the entries from the heartbeats 
 
 #### Next
 - Log replication:
-  - Commit index + applying entries to the store
-- Route writes to the leader (followers redirect or reject)
+  - Update stored data on replies from followers
+  - Retry replication on failure
+  - Apply committed entries to the store
+  - PUT/DELETE waits for commit before replying
 
 #### Later
 - Turn uvicorn auto reload off in the docker containers

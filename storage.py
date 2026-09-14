@@ -58,12 +58,25 @@ class Storage:
 
     def get_log(self):
         return self.state.log
+    
+    def set_log(self, log: list[LogEntry]):
+        self.state.log = log
+        self.save_state()
 
     def get_last_index(self):
         return self.state.log[-1].index if self.state.log else 0
     
     def get_last_term(self):
         return self.state.log[-1].term if self.state.log else 0
+
+    def get_term_at(self, index: int) -> int | None:
+        # index 0 = no term yet
+        if index == 0:
+            return 0
+        # index not stored
+        if index > self.get_last_index():
+            return None
+        return self.state.log[index - 1].term
 
     def append_entry(self, entry: LogEntry):
         self.state.log.append(entry)
