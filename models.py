@@ -1,10 +1,10 @@
 from enum import Enum
-from typing import List
+from typing import List, Literal
 from pydantic import BaseModel
 
 class Operation(BaseModel):
-    type: str
-    key: str
+    type: Literal["PUT", "DELETE", "NOOP"] 
+    key: str | None = None
     value: str | None = None
 
 class LogEntry(BaseModel):

@@ -40,34 +40,48 @@ class RaftNode:
 
     # data store operations
     
-    def get_value(self, key: str, default=None):
+    async def get_value(self, key: str, default=None):
+        if self.state != NodeState.LEADER:
+            raise HTTPException(status_code=421, detail="not a leader")
+        
+        # wait for to be up to date 
+        while self.storage.get_term_at(self.commit_index) != self.storage.get_current_term():
+            self.check_still_leader()
+            await asyncio.sleep(0.01)
+        temp = self.commit_index
+        
+        acks = await self.send_heartbeat()
+        if self.state != NodeState.LEADER or acks + 1 <= (len(self.peers) + 1) // 2:
+            raise HTTPException(status_code=421, detail="lost leadership")
+        
+        # ensure we are caught up
+        while self.last_applied < temp:
+            self.check_still_leader()
+            await asyncio.sleep(0.01)
+        
         return self.storage.get_value(key, default)
 
     async def set_value(self, key: str, value: str):
-        if self.state != NodeState.LEADER:
-            raise HTTPException(status_code=421, detail="not a leader")
-        
-        index = self.append_log(Operation(type="PUT", key=key, value=value))
-        
-        while self.commit_index < index:
-            if self.state != NodeState.LEADER:
-                raise HTTPException(status_code=421, detail="lost leadership")
-            await asyncio.sleep(0.01)
+        await self.perform_request(Operation(type="PUT", key=key, value=value))
 
     async def delete_value(self, key: str):
-        if self.state != NodeState.LEADER:
-            raise HTTPException(status_code=421, detail="not a leader")
-                
-        # append to log
-        index = self.append_log(Operation(type="DELETE", key=key))
+        await self.perform_request(Operation(type="DELETE", key=key))
+            
+    async def perform_request(self, op: Operation):
+        self.check_still_leader()
+        index = self.append_log(op)
 
-        while self.commit_index < index:
-            if self.state != NodeState.LEADER:
-                raise HTTPException(status_code=421, detail="lost leadership")
+        # wait for entry to be applied to the state machine
+        while self.last_applied < index:
+            self.check_still_leader()
             await asyncio.sleep(0.01)
 
     def get_all_values(self):
         return self.storage.get_all_values()
+    
+    def check_still_leader(self):
+        if self.state != NodeState.LEADER:
+            raise HTTPException(status_code=421, detail="lost leadership")
 
     # log operations
     
@@ -104,9 +118,13 @@ class RaftNode:
         self.state = NodeState.LEADER
         self.leader_id = self.node_id
         print(f"node {self.node_id}: transition to LEADER. I AM LEADER!!!!")
+        
         # re-initialise volatile state on leaders
         self.next_index = {peer: self.get_last_index() + 1 for peer in self.peers}
         self.match_index = {peer: 0 for peer in self.peers}
+        
+        # add NOOP entry to log
+        self.append_log(Operation(type="NOOP"))
 
     def election_timed_out(self) -> bool:
         return time.monotonic() > self.election_time_limit
@@ -173,35 +191,38 @@ class RaftNode:
             leader_commit = self.commit_index,
         )
 
-    async def send_heartbeat(self):
+    async def send_heartbeat(self) -> int:
         async with httpx.AsyncClient(timeout=self.rpc_timeout) as client:
-            await asyncio.gather(*(self.send_log(peer, client) for peer in self.peers))
+            acks = await asyncio.gather(*(self.send_log(peer, client) for peer in self.peers))
             
         # double check still a leader
         if self.state != NodeState.LEADER:
-            return
+            return 0
         self.update_commit_index()
+        return sum(acks)
                 
-    async def send_log(self, peer: str, client: httpx.AsyncClient):
+    async def send_log(self, peer: str, client: httpx.AsyncClient) -> bool:
         filled_RPC = self.build_append_entries(peer)
         
         try:
             res = await client.post(f"http://{peer}/append_entries", json=filled_RPC.model_dump())
             data = AppendEntriesResponse(**res.raise_for_status().json())
         except httpx.HTTPError:
-            return
+            return False
         
         if self.step_down_if_behind(data.term) or self.state != NodeState.LEADER:
-            return 
+            return False
         
         # if successful then update next_index and match_index
         if data.success:
             last_sent = filled_RPC.prev_log_index + len(filled_RPC.entries)
             self.next_index[peer] = last_sent + 1
             self.match_index[peer] = last_sent
+            return True
         # if fails, decrement next_index and try again
         else: 
             self.next_index[peer] = max(1, self.next_index[peer] -1)
+            return False
         
     def update_commit_index(self):
         # find highest possible N 
@@ -320,5 +341,7 @@ class RaftNode:
                 self.storage.set_value(op.key, op.value)
             case "DELETE":
                 self.storage.delete_value(op.key)
+            case "NOOP":
+                pass
                 
         self.last_applied += 1

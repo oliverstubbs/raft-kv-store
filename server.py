@@ -29,8 +29,8 @@ def read_root():
     return {}
 
 @server.get("/value/{key}")
-def get_value(key: str):
-    val = raft_node.get_value(key)
+async def get_value(key: str):
+    val = await raft_node.get_value(key)
     return {"key": key, "value": val}
 
 @server.put("/value/{key}")
