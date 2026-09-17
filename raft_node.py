@@ -41,8 +41,7 @@ class RaftNode:
     # data store operations
     
     async def get_value(self, key: str, default=None):
-        if self.state != NodeState.LEADER:
-            raise HTTPException(status_code=421, detail="not a leader")
+        self.check_still_leader()
         
         # wait for to be up to date 
         while self.storage.get_term_at(self.commit_index) != self.storage.get_current_term():
@@ -51,7 +50,7 @@ class RaftNode:
         temp = self.commit_index
         
         acks = await self.send_heartbeat()
-        if self.state != NodeState.LEADER or acks + 1 <= (len(self.peers) + 1) // 2:
+        if self.state != NodeState.LEADER or not self.has_majority(acks):
             raise HTTPException(status_code=421, detail="lost leadership")
         
         # ensure we are caught up
@@ -83,8 +82,12 @@ class RaftNode:
         if self.state != NodeState.LEADER:
             raise HTTPException(status_code=421, detail="lost leadership")
 
+    def has_majority(self, peer_count: int) -> bool:
+        # peer_count excludes this node, which always counts itself
+        return peer_count + 1 > (len(self.peers) + 1) // 2
+
     # log operations
-    
+
     def get_log(self):
         return self.storage.get_log()
 
@@ -132,9 +135,18 @@ class RaftNode:
     async def run_election(self):
         print(f"node {self.node_id}: transition to candidate")
         self.state = NodeState.CANDIDATE
+        self.reset_election_timer()
+
+        # pre-vote: only bump the term if a majority would vote for us
+        responses = await self.send_vote_requests(pre_vote=True)
+        votes = sum(1 for res in responses if res.vote_granted)
+        if not self.has_majority(votes):
+            print(f"node {self.node_id}: pre-vote failed - staying follower")
+            self.state = NodeState.FOLLOWER
+            return
+
         self.storage.increment_current_term()
         self.storage.set_voted_for(self.node_id)
-        self.reset_election_timer()
         term = self.storage.get_current_term()
 
         # send vote requests to all other servers
@@ -154,7 +166,7 @@ class RaftNode:
 
         # check if have maj of votes to become leader
         votes = sum(1 for res in responses if res.vote_granted)
-        if votes + 1 > (len(self.peers) + 1) // 2: # +1 for this node's vote for itself
+        if self.has_majority(votes):
             self.become_leader()
 
     async def run_node(self):
@@ -249,17 +261,23 @@ class RaftNode:
             print(f"node {self.node_id}: term is greater than {req.candidate_id}, vote request rejected")
             return RequestVoteResponse(term=current_term, vote_granted=False)
 
+        # pre-vote: answer as if it were real, but change nothing
+        if req.pre_vote:
+            granted = self.state != NodeState.LEADER and self.election_timed_out() and self.log_up_to_date(req)
+            return RequestVoteResponse(term=current_term, vote_granted=granted)
+
         # check if behind - update term and become follower
         self.step_down_if_behind(req.term)
-        
+        current_term = self.storage.get_current_term()
+
         if self.can_vote_for(req) and self.log_up_to_date(req):
             self.storage.set_voted_for(req.candidate_id)
             self.reset_election_timer()
             print(f"node {self.node_id}: voted for {req.candidate_id}")
-            return RequestVoteResponse(term=self.storage.get_current_term(), vote_granted=True)
+            return RequestVoteResponse(term=current_term, vote_granted=True)
         else:
             print(f"node {self.node_id}: did not vote for {req.candidate_id}")
-            return RequestVoteResponse(term=self.storage.get_current_term(), vote_granted=False)
+            return RequestVoteResponse(term=current_term, vote_granted=False)
     
     def can_vote_for(self, req: RequestVoteRequest) -> bool:
         voted_for = self.storage.get_voted_for()
@@ -270,12 +288,16 @@ class RaftNode:
         last_log_index = self.storage.get_last_index()
         return (req.last_log_term > last_log_term or (req.last_log_term == last_log_term and req.last_log_index >= last_log_index))
     
-    async def send_vote_requests(self) -> list[RequestVoteResponse]:
+    async def send_vote_requests(self, pre_vote: bool = False) -> list[RequestVoteResponse]:
+        # send next term if prevote
+        term = self.storage.get_current_term() + (1 if pre_vote else 0)
+            
         req = RequestVoteRequest(
-            term = self.storage.get_current_term(),
+            term = term,
             candidate_id = self.node_id,
             last_log_index = self.storage.get_last_index(),
-            last_log_term = self.storage.get_last_term()
+            last_log_term = self.storage.get_last_term(),
+            pre_vote = pre_vote
         )
         json = req.model_dump()
         

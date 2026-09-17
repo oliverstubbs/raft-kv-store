@@ -41,6 +41,7 @@ class RequestVoteRequest(BaseModel):
     candidate_id: str
     last_log_index: int
     last_log_term: int
+    pre_vote: bool = False
     
 class RequestVoteResponse(BaseModel):
     term: int
