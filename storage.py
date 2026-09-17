@@ -44,7 +44,7 @@ class Storage:
         self.save_data()
 
     def delete_value(self, key):
-        value = self.data.pop(key)
+        value = self.data.pop(key, None)
         self.save_data()
         return value
 

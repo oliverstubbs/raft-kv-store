@@ -43,27 +43,28 @@ class RaftNode:
     def get_value(self, key: str, default=None):
         return self.storage.get_value(key, default)
 
-    def set_value(self, key: str, value: str):
+    async def set_value(self, key: str, value: str):
         if self.state != NodeState.LEADER:
             raise HTTPException(status_code=421, detail="not a leader")
-        # append to log
-        self.append_log(Operation(type="PUT", key=key, value=value))
+        
+        index = self.append_log(Operation(type="PUT", key=key, value=value))
+        
+        while self.commit_index < index:
+            if self.state != NodeState.LEADER:
+                raise HTTPException(status_code=421, detail="lost leadership")
+            await asyncio.sleep(0.01)
 
-        # update data store
-        old_val = self.storage.get_value(key)
-        #self.storage.set_value(key, value)
-        return old_val
-
-    def delete_value(self, key: str):
+    async def delete_value(self, key: str):
         if self.state != NodeState.LEADER:
             raise HTTPException(status_code=421, detail="not a leader")
                 
         # append to log
-        self.append_log(Operation(type="DELETE", key=key))
+        index = self.append_log(Operation(type="DELETE", key=key))
 
-        # update data store
-        #old_val = self.storage.delete_value(key)
-        return None
+        while self.commit_index < index:
+            if self.state != NodeState.LEADER:
+                raise HTTPException(status_code=421, detail="lost leadership")
+            await asyncio.sleep(0.01)
 
     def get_all_values(self):
         return self.storage.get_all_values()
@@ -73,12 +74,14 @@ class RaftNode:
     def get_log(self):
         return self.storage.get_log()
 
-    def append_log(self, op: Operation):
+    def append_log(self, op: Operation) -> int:
+        index = self.get_last_index() + 1
         self.storage.append_entry(LogEntry(
-                index = self.get_last_index() + 1, 
-                term = self.storage.get_current_term(), 
+                index = index,
+                term = self.storage.get_current_term(),
                 operation = op
             ))
+        return index
 
     def get_last_index(self):
         return self.storage.get_last_index()
@@ -140,6 +143,10 @@ class RaftNode:
         self.reset_election_timer()
 
         while True:
+            # check if need to apply log
+            while self.commit_index > self.last_applied:
+                self.apply_log()
+            
             # if leader send heartbeats
             if self.state == NodeState.LEADER:
                 await self.send_heartbeat()
@@ -154,9 +161,6 @@ class RaftNode:
 
     def build_append_entries(self, peer: str) -> AppendEntriesRequest:
         log = self.storage.get_log()
-
-        # the entry directly before the ones we're sending. 0 means we're sending
-        # the whole log, so the peer has nothing to match against
         prev_log_index = self.next_index[peer] - 1
         prev_log_term = self.storage.get_term_at(prev_log_index)
 
@@ -172,6 +176,11 @@ class RaftNode:
     async def send_heartbeat(self):
         async with httpx.AsyncClient(timeout=self.rpc_timeout) as client:
             await asyncio.gather(*(self.send_log(peer, client) for peer in self.peers))
+            
+        # double check still a leader
+        if self.state != NodeState.LEADER:
+            return
+        self.update_commit_index()
                 
     async def send_log(self, peer: str, client: httpx.AsyncClient):
         filled_RPC = self.build_append_entries(peer)
@@ -194,6 +203,17 @@ class RaftNode:
         else: 
             self.next_index[peer] = max(1, self.next_index[peer] -1)
         
+    def update_commit_index(self):
+        # find highest possible N 
+        indices = sorted([self.get_last_index(), *self.match_index.values()], reverse=True)
+        n = indices[(len(self.peers) + 1) // 2]
+            
+        # loop through max N to min N to see if can update commit_index
+        current_term = self.storage.get_current_term()
+        for i in range(n, self.commit_index, -1):
+            if self.storage.get_term_at(i) == current_term:
+                self.commit_index = i
+                break
     
     def step_down_if_behind(self, req_term: int) -> bool:
         if(req_term > self.storage.get_current_term()):
@@ -292,3 +312,13 @@ class RaftNode:
             self.commit_index = min(req.leader_commit, index-1)
 
         return AppendEntriesResponse(term=self.storage.get_current_term(), success=True)
+
+    def apply_log(self):
+        op = self.get_log()[self.last_applied].operation
+        match op.type:
+            case "PUT":
+                self.storage.set_value(op.key, op.value)
+            case "DELETE":
+                self.storage.delete_value(op.key)
+                
+        self.last_applied += 1

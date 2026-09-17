@@ -34,13 +34,13 @@ def get_value(key: str):
     return {"key": key, "value": val}
 
 @server.put("/value/{key}")
-def set_value(key: str, value: str):
-    old_val = raft_node.set_value(key, value)
+async def set_value(key: str, value: str):
+    old_val = await raft_node.set_value(key, value)
     return {"key": key, "new_value": value, "old_value": old_val}
 
 @server.delete("/value/{key}")
-def delete_value(key: str):
-    old_val = raft_node.delete_value(key)
+async def delete_value(key: str):
+    old_val = await raft_node.delete_value(key)
     return {"key": key, "old_value": old_val}
 
 @server.get("/entrySet")
