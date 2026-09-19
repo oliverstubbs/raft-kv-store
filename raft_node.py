@@ -21,7 +21,6 @@ class RaftNode:
         
         # volatile state (on all servers)
         self.commit_index: int = 0
-        self.last_applied: int = 0
 
         # last leader
         self.leader_id: str | None = None
@@ -54,26 +53,29 @@ class RaftNode:
             raise HTTPException(status_code=421, detail="lost leadership")
         
         # ensure we are caught up
-        while self.last_applied < temp:
+        while self.storage.get_last_applied() < temp:
             self.check_still_leader()
             await asyncio.sleep(0.01)
         
         return self.storage.get_value(key, default)
 
     async def set_value(self, key: str, value: str):
-        await self.perform_request(Operation(type="PUT", key=key, value=value))
+        return await self.perform_request(Operation(type="PUT", key=key, value=value))
 
     async def delete_value(self, key: str):
-        await self.perform_request(Operation(type="DELETE", key=key))
-            
+        return await self.perform_request(Operation(type="DELETE", key=key))
+
     async def perform_request(self, op: Operation):
         self.check_still_leader()
+        old_value = self.storage.get_value(op.key)
         index = self.append_log(op)
 
         # wait for entry to be applied to the state machine
-        while self.last_applied < index:
+        while self.storage.get_last_applied() < index:
             self.check_still_leader()
             await asyncio.sleep(0.01)
+
+        return old_value
 
     def get_all_values(self):
         return self.storage.get_all_values()
@@ -174,8 +176,7 @@ class RaftNode:
 
         while True:
             # check if need to apply log
-            while self.commit_index > self.last_applied:
-                self.apply_log()
+            self.apply_log()
             
             # if leader send heartbeats
             if self.state == NodeState.LEADER:
@@ -357,13 +358,23 @@ class RaftNode:
         return AppendEntriesResponse(term=self.storage.get_current_term(), success=True)
 
     def apply_log(self):
-        op = self.get_log()[self.last_applied].operation
-        match op.type:
-            case "PUT":
-                self.storage.set_value(op.key, op.value)
-            case "DELETE":
-                self.storage.delete_value(op.key)
-            case "NOOP":
-                pass
+        last_applied = self.storage.get_last_applied()
+        
+        if self.commit_index <= last_applied:
+            return
+        
+        # loop through all logs and write them to disk
+        while self.commit_index > last_applied:
+            op = self.get_log()[last_applied].operation
+            print(f"node {self.node_id}: applying {last_applied + 1} ({op.type})")
+            match op.type:
+                case "PUT":
+                    self.storage.set_value(op.key, op.value)
+                case "DELETE":
+                    self.storage.delete_value(op.key)
+                case "NOOP":
+                    pass
+            last_applied += 1
                 
-        self.last_applied += 1
+        # actually save it 
+        self.storage.set_last_applied(last_applied)

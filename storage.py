@@ -7,6 +7,7 @@ class Storage:
         self.data_filepath = data_filepath
         self.state_filepath = state_filepath
         self.data = {}
+        self.last_applied = 0
         
         # Persistent state
         self.state = RaftState()
@@ -15,9 +16,12 @@ class Storage:
     def load(self):
         try:
             with open(self.data_filepath, 'r') as f:
-                self.data = json.load(f)
+                saved = json.load(f)
+                self.data = saved["data"]
+                self.last_applied = saved["last_applied"]
         except FileNotFoundError:
             self.data = {}
+            self.last_applied = 0
         try:
             with open(self.state_filepath, 'r') as f:
                 state_data = json.load(f)
@@ -28,7 +32,7 @@ class Storage:
 
     def save_data(self):
         with open(self.data_filepath, 'w') as f:
-            json.dump(self.data, f)
+            json.dump({"last_applied": self.last_applied, "data": self.data}, f)
 
     def save_state(self):
         with open(self.state_filepath, 'w') as f:
@@ -41,11 +45,9 @@ class Storage:
 
     def set_value(self, key, value):
         self.data[key] = value
-        self.save_data()
 
     def delete_value(self, key):
         value = self.data.pop(key, None)
-        self.save_data()
         return value
 
     def get_all_values(self):
@@ -53,6 +55,13 @@ class Storage:
 
     def __contains__(self, key):
         return key in self.data
+    
+    def get_last_applied(self):
+        return self.last_applied
+    
+    def set_last_applied(self, val):
+        self.last_applied = val
+        self.save_data()
 
     # state store methods
 
