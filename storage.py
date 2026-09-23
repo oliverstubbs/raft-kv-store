@@ -1,54 +1,29 @@
 import json
+import sqlite3
 from models import RaftState, LogEntry
 
-
 class Storage:
-    def __init__(self, data_filepath='storage.json', state_filepath='raft_state.json'):
-        self.data_filepath = data_filepath
-        self.state_filepath = state_filepath
-        self.data = {}
-        self.last_applied = 0
-        
-        # Persistent state
-        self.state = RaftState()
-        self.load()
+    def __init__(self, db_path='raft.db'):
+        self.db_path = db_path
+        self.db_conn = sqlite3.connect(self.db_path)
+        self.create_tables()
 
-    def load(self):
-        try:
-            with open(self.data_filepath, 'r') as f:
-                saved = json.load(f)
-                self.data = saved["data"]
-                self.last_applied = saved["last_applied"]
-        except FileNotFoundError:
-            self.data = {}
-            self.last_applied = 0
-        try:
-            with open(self.state_filepath, 'r') as f:
-                state_data = json.load(f)
-                self.state = RaftState.model_validate(state_data)
-        except (FileNotFoundError, json.JSONDecodeError, KeyError):
-            self.state = RaftState()
-
-
-    def save_data(self):
-        with open(self.data_filepath, 'w') as f:
-            json.dump({"last_applied": self.last_applied, "data": self.data}, f)
-
-    def save_state(self):
-        with open(self.state_filepath, 'w') as f:
-            json.dump(self.state.model_dump(), f)
+    def save(self):
+        self.db_conn.commit()
     
     # update data store
 
     def get_value(self, key, default=None):
-        return self.data.get(key, default)
+        row = self.db_conn.execute("SELECT value FROM data WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else default
 
     def set_value(self, key, value):
-        self.data[key] = value
+        self.db_conn.execute("INSERT OR REPLACE INTO data VALUES (?, ?)", (key, value))
+        return "NEED TO CHANGE"
 
     def delete_value(self, key):
-        value = self.data.pop(key, None)
-        return value
+        self.db_conn.execute("DELETE FROM data WHERE key = ?", (key,))
+        return "NEED TO CHANGE"
 
     def get_all_values(self):
         return self.data
@@ -56,12 +31,13 @@ class Storage:
     def __contains__(self, key):
         return key in self.data
     
-    def get_last_applied(self):
-        return self.last_applied
+    def get_last_applied(self, default=0):
+        row = self.db_conn.execute("SELECT last_applied FROM raft_state WHERE id = 1").fetchone()
+        return row[0] if row else default
     
     def set_last_applied(self, val):
-        self.last_applied = val
-        self.save_data()
+        self.db_conn.execute("UPDATE raft_state SET last_applied = ?", (val,))
+        self.save()
 
     # state store methods
 
@@ -108,3 +84,29 @@ class Storage:
     def set_voted_for(self, candidate_id: str | None):
         self.state.voted_for = candidate_id
         self.save_state()
+        
+    def create_tables(self):
+        
+        self.db_conn.executescript("""
+            CREATE TABLE IF NOT EXISTS data (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            );
+            
+            CREATE TABLE IF NOT EXISTS log (
+                idx INTEGER PRIMARY KEY,
+                term INTEGER NOT NULL, 
+                operation TEXT NOT NULL
+            );
+            
+            CREATE TABLE IF NOT EXISTS raft_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                current_term INTEGER NOT NULL DEFAULT 0,
+                voted_for TEXT,
+                last_applied INTEGER NOT NULL DEFAULT 0
+            );
+            
+            INSERT OR IGNORE INTO raft_state (id, voted_for) VALUES (1, NULL);
+        """)
+                  
+        self.db_conn.commit()

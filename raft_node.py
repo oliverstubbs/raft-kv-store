@@ -17,7 +17,7 @@ class RaftNode:
         self.peers = [p for p in os.getenv("PEERS", "").split(",") if p]
         
         # persistent state 
-        self.storage = Storage(data_filepath='/data/storage.json', state_filepath='/data/raft_state.json')
+        self.storage = Storage(db_path=os.getenv("DB_PATH", "raft.db"))
         
         # volatile state (on all servers)
         self.commit_index: int = 0

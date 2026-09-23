@@ -1,12 +1,11 @@
 # To Do List :)
 
 #### Done
-- Persist last_applied in storage.json (same save as the data) so a restart doesn't re-apply the whole log
-- Batch the applies - apply all pending entries then save once (instead of a file write per entry)
 
 #### Next
-- Update file writes to use asyncio (save in a thread) so doesn't block heartbeats or RPC handling
-- Stop seriailising whole log per entry 
+- Move storage to use DB (SQLite)
+- Apply entries and updte last_applied in one go
+- Update file writes to use asyncio (save in a thread) so doesn't block heartbeats or RPC handling (if still too slow...)
 
 #### Later
 - Turn uvicorn auto reload off in the docker containers
@@ -14,3 +13,4 @@
 - http API requests don't handle exceptions
 - Add try/except for main run node loop
 - add client.py example
+- close db connection 

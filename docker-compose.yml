@@ -9,6 +9,7 @@ services:
       - node1_data:/data
     environment:
       NODE_ID: 1
+      DB_PATH: /data/raft.db
       PEERS: node2:8000,node3:8000
   node2:
     build: .
@@ -20,6 +21,7 @@ services:
       - node2_data:/data
     environment:
       NODE_ID: 2
+      DB_PATH: /data/raft.db
       PEERS: node1:8000,node3:8000
   node3:
     build: .
@@ -31,6 +33,7 @@ services:
       - node3_data:/data
     environment:
       NODE_ID: 3
+      DB_PATH: /data/raft.db
       PEERS: node1:8000,node2:8000
 
 volumes:
