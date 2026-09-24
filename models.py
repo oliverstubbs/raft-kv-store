@@ -11,11 +11,6 @@ class LogEntry(BaseModel):
     index: int
     term: int
     operation: Operation
-   
-class RaftState(BaseModel):
-    current_term: int = 0
-    voted_for: str | None = None
-    log: List[LogEntry] = []
     
 class NodeState(Enum):
     FOLLOWER = "follower"

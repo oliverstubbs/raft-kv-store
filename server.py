@@ -44,11 +44,11 @@ async def delete_value(key: str):
     return {"key": key, "old_value": old_val}
 
 @server.get("/entrySet")
-def get_entrySet():
+async def get_entrySet():
     return raft_node.get_all_values()
 
 @server.get("/temp/log")
-def get_log():
+async def get_log():
     return raft_node.get_log()
 
 @server.post("/request_vote")
