@@ -1,17 +1,17 @@
-import json
+import asyncio
 import sqlite3
 from models import LogEntry, Operation
 
 class Storage:
     def __init__(self, db_path='raft.db'):
         self.db_path = db_path
-        self.db_conn = sqlite3.connect(self.db_path)
+        self.db_conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.create_tables()
         self.load_log()
 
-    def save(self):
-        self.db_conn.commit()
-    
+    async def save(self):
+        await asyncio.to_thread(self.db_conn.commit)
+
     # data table operations
 
     def get_value(self, key, default=None):
@@ -43,14 +43,14 @@ class Storage:
     def get_log(self) -> list[LogEntry]:
         return list(self.log) # send copy
     
-    def set_log(self, log: list[LogEntry]):
+    async def set_log(self, log: list[LogEntry]):
         self.log = log
         self.db_conn.execute("DELETE FROM log")
         self.db_conn.executemany(
             "INSERT INTO log VALUES (?, ?, ?, ?, ?)",
             [(e.index, e.term, e.operation.type, e.operation.key, e.operation.value) for e in log],
         )
-        self.save()
+        await self.save()
 
     def get_last_index(self):
         return self.log[-1].index if self.log else 0
@@ -67,38 +67,38 @@ class Storage:
             return None
         return self.log[index - 1].term
 
-    def append_entry(self, entry: LogEntry):
+    async def append_entry(self, entry: LogEntry):
         self.log.append(entry)
         self.db_conn.execute("INSERT OR REPLACE INTO log VALUES (?, ?, ?, ?, ?)", (entry.index, entry.term, entry.operation.type, entry.operation.key, entry.operation.value))
-        self.save()
+        await self.save()
     
     # raft_state operations
     
     def get_current_term(self):
         return self.db_conn.execute("SELECT current_term FROM raft_state WHERE id = 1").fetchone()[0]
 
-    def set_current_term(self, term: int):
+    async def set_current_term(self, term: int):
         self.db_conn.execute("UPDATE raft_state SET current_term = ? WHERE id = 1", (term,))
-        self.save()
+        await self.save()
 
-    def increment_current_term(self):
+    async def increment_current_term(self):
         self.db_conn.execute("UPDATE raft_state SET current_term = current_term + 1 WHERE id = 1")
-        self.save()
+        await self.save()
 
     def get_voted_for(self):
         return self.db_conn.execute("SELECT voted_for FROM raft_state WHERE id = 1").fetchone()[0]
 
-    def set_voted_for(self, candidate_id: str | None):
+    async def set_voted_for(self, candidate_id: str | None):
         self.db_conn.execute("UPDATE raft_state SET voted_for = ? WHERE id = 1", (candidate_id,))
-        self.save()
+        await self.save()
     
     def get_last_applied(self, default=0):
         row = self.db_conn.execute("SELECT last_applied FROM raft_state WHERE id = 1").fetchone()
         return row[0] if row else default
     
-    def set_last_applied(self, val):
+    async def set_last_applied(self, val):
         self.db_conn.execute("UPDATE raft_state SET last_applied = ? WHERE id = 1", (val,))
-        self.save() # saves, applying all changes not commited in the data table operations
+        await self.save() # saves, applying all changes not commited in the data table operations
         
     # method to be called on start up
         

@@ -1,11 +1,9 @@
 # To Do List :)
 
 #### Done
-- Move storage to use DB (SQLite)
-- Apply entries and updte last_applied in one go
+- Update file writes to use asyncio (save in a thread) so doesn't block heartbeats or RPC handling
 
 #### Next
-- Update file writes to use asyncio (save in a thread) so doesn't block heartbeats or RPC handling
 - in send_heartbeat don't wait 150ms for full responses
 
 #### Later
