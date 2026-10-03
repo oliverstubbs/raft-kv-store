@@ -42,13 +42,18 @@ class Storage:
     
     def get_log(self) -> list[LogEntry]:
         return list(self.log) # send copy
+        
+    async def truncate_log(self, index):
+        # remove from log at index onwards
+        self.log = self.log[: index - 1]
+        self.db_conn.execute("DELETE FROM log WHERE idx >= ?", (index,))
+        await self.save()
     
-    async def set_log(self, log: list[LogEntry]):
-        self.log = log
-        self.db_conn.execute("DELETE FROM log")
+    async def append_log(self, entries: list[LogEntry]):
+        self.log.extend(entries)
         self.db_conn.executemany(
-            "INSERT INTO log VALUES (?, ?, ?, ?, ?)",
-            [(e.index, e.term, e.operation.type, e.operation.key, e.operation.value) for e in log],
+            "INSERT OR REPLACE INTO log VALUES (?, ?, ?, ?, ?)",
+            [(e.index, e.term, e.operation.type, e.operation.key, e.operation.value) for e in entries],
         )
         await self.save()
 

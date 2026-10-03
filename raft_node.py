@@ -33,6 +33,7 @@ class RaftNode:
         self.match_index = None
         
         # timers for election
+        self.last_leader_contact = 0
         self.election_time_limit = 0
         self.election_time_min = 0.15
         self.election_time_max = 0.3
@@ -138,6 +139,10 @@ class RaftNode:
 
     def election_timed_out(self) -> bool:
         return time.monotonic() > self.election_time_limit
+    
+    # true if recently heard from leader
+    def heard_from_leader(self) -> bool:
+        return time.monotonic() - self.last_leader_contact < self.election_time_min
 
     async def run_election(self):
         print(f"node {self.node_id}: transition to candidate")
@@ -280,7 +285,7 @@ class RaftNode:
 
             # pre-vote: answer as if it were real, but change nothing
             if req.pre_vote:
-                granted = self.state != NodeState.LEADER and self.election_timed_out() and self.log_up_to_date(req)
+                granted = self.state != NodeState.LEADER and not self.heard_from_leader() and self.log_up_to_date(req)
                 return RequestVoteResponse(term=current_term, vote_granted=granted)
 
             # check if behind - update term and become follower
@@ -305,6 +310,13 @@ class RaftNode:
         last_log_index = self.storage.get_last_index()
         return (req.last_log_term > last_log_term or (req.last_log_term == last_log_term and req.last_log_index >= last_log_index))
     
+    async def send_vote_request(self, peer: str, client: httpx.Client, json: dict) -> RequestVoteResponse:
+        try:
+            res = await client.post(f"http://{peer}/request_vote", json=json)
+            return RequestVoteResponse(**res.raise_for_status().json())
+        except (httpx.HTTPError, ValueError):
+            return None
+    
     async def send_vote_requests(self, pre_vote: bool = False) -> list[RequestVoteResponse]:
         # send next term if prevote
         term = self.storage.get_current_term() + (1 if pre_vote else 0)
@@ -319,20 +331,19 @@ class RaftNode:
         json = req.model_dump()
         
         async with httpx.AsyncClient(timeout=self.rpc_timeout) as client:
-            requests = [
-                client.post(f"http://{peer}/request_vote", json=json)
-                for peer in self.peers 
-            ]
-            responses = await asyncio.gather(*requests, return_exceptions=True)
-            
-            # filter out peers that don't respond 
-            votes = []
-            for res in responses:
-                if isinstance(res, BaseException):
-                    continue
-                votes.append(RequestVoteResponse(**res.raise_for_status().json()))
-            return votes    
+            results = await asyncio.gather(
+                *(self.send_vote_request(peer, client, json) for peer in self.peers)
+            )
+            return [r for r in results if r is not None] # filters out missing responses
         
+    def get_first_new_entry(self, log, entries, start) -> int:
+        for offset, entry in enumerate(entries):
+            index = start + offset
+            # check if an existing entry conflicts with a new one
+            if index > len(log) or log[index -1].term != entry.term:
+                return offset
+        return len(entries)
+    
     async def handle_append_entries(self, req: AppendEntriesRequest) -> AppendEntriesResponse:
         async with self.state_lock:
             if req.entries:
@@ -348,30 +359,28 @@ class RaftNode:
             self.state = NodeState.FOLLOWER
             self.leader_id = req.leader_id
             self.reset_election_timer()
+            self.last_leader_contact = time.monotonic()
 
             # check if contains entry at prev log index
             if self.storage.get_term_at(req.prev_log_index) != req.prev_log_term:
                 return AppendEntriesResponse(term=current_term, success=False)
 
             # delete any conflicting entries and append the new entries
-            index = req.prev_log_index + 1
             if req.entries:
+                start = req.prev_log_index + 1
                 log = self.get_log()
-                for entry in req.entries:
+                new_from = self.get_first_new_entry(log, req.entries, start)
+                
+                if new_from < len(req.entries):
+                    index = start + new_from
                     if index <= len(log):
-                        # check if an existing entry conflicts with a new one
-                        if log[index - 1].term != entry.term:
-                            # delete existing entry and all that follow it
-                            log = log[: index - 1]
-                            log.append(entry)
-                    # otherwise past the end, so can just add to end of log
-                    else:
-                        log.append(entry)
-                    index += 1
-                await self.storage.set_log(log)
+                        # delete existing entry and all that follow it
+                        await self.storage.truncate_log(index)
+                    # add the new ones
+                    await self.storage.append_log(req.entries[new_from:])
 
             if req.leader_commit > self.commit_index:
-                self.commit_index = min(req.leader_commit, index-1)
+                self.commit_index = min(req.leader_commit, req.prev_log_index + len(req.entries))
 
             return AppendEntriesResponse(term=self.storage.get_current_term(), success=True)
 
