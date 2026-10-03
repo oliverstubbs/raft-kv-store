@@ -31,7 +31,12 @@ class RaftNode:
         # volatile state (on leaders)
         self.next_index = None
         self.match_index = None
-        
+
+        # references for heartbeats
+        self.rounds = set()
+        self.in_flight = {}
+        self.last_ack = {}
+
         # timers for election
         self.last_leader_contact = 0
         self.election_time_limit = 0
@@ -52,10 +57,8 @@ class RaftNode:
             await asyncio.sleep(0.01)
         temp = self.commit_index
         
-        acks = await self.send_heartbeat()
-        if self.state != NodeState.LEADER or not self.has_majority(acks):
-            raise HTTPException(status_code=421, detail="lost leadership")
-        
+        await self.wait_for_majority_ack()
+
         # ensure we are caught up
         while self.storage.get_last_applied() < temp:
             self.check_still_leader()
@@ -93,6 +96,18 @@ class RaftNode:
     def has_majority(self, peer_count: int) -> bool:
         # peer_count excludes this node, which always counts itself
         return peer_count + 1 > (len(self.peers) + 1) // 2
+
+    async def wait_for_majority_ack(self):
+        asked_at = time.monotonic()
+        deadline = asked_at + self.election_time_max
+
+        while time.monotonic() < deadline:
+            self.check_still_leader()
+            if self.has_majority(sum(1 for at in self.last_ack.values() if at > asked_at)):
+                return
+            await asyncio.sleep(0.01)
+
+        raise HTTPException(status_code=421, detail="lost leadership")
 
     # log operations
 
@@ -188,22 +203,25 @@ class RaftNode:
 
     async def run_node(self):
         self.reset_election_timer()
+        asyncio.create_task(self.heartbeat_loop())
 
         while True:
             # check if need to apply log
             await self.apply_log()
-            
-            # if leader send heartbeats
-            if self.state == NodeState.LEADER:
-                await self.send_heartbeat()
-                await asyncio.sleep(self.heartbeat_interval)
-                continue
 
             # handle transition to CANDIDATE state
-            if self.election_timed_out():
+            if self.state != NodeState.LEADER and self.election_timed_out():
                 await self.run_election()
 
             await asyncio.sleep(0.01)
+
+    async def heartbeat_loop(self):
+        while True:
+            if self.state == NodeState.LEADER:
+                round = asyncio.create_task(self.send_heartbeat())
+                self.rounds.add(round)
+                round.add_done_callback(self.rounds.discard)
+            await asyncio.sleep(self.heartbeat_interval)
 
     def build_append_entries(self, peer: str) -> AppendEntriesRequest:
         log = self.storage.get_log()
@@ -232,25 +250,34 @@ class RaftNode:
     async def send_log(self, peer: str, client: httpx.AsyncClient) -> bool:
         if self.state != NodeState.LEADER:
             return False
+        
+        # check if still waiting response from last one
+        if self.in_flight.get(peer):
+            return False
         filled_RPC = self.build_append_entries(peer)
 
+        self.in_flight[peer] = True
         try:
             res = await client.post(f"http://{peer}/append_entries", json=filled_RPC.model_dump())
             data = AppendEntriesResponse(**res.raise_for_status().json())
-        except httpx.HTTPError:
+        except (httpx.HTTPError, ValueError):
             return False
+        finally:
+            self.in_flight[peer] = False
 
-        async with self.state_lock:
-            if await self.step_down_if_behind(data.term):
-                return False
+        if data.term > self.storage.get_current_term():
+            async with self.state_lock:
+                if await self.step_down_if_behind(data.term):
+                    return False
         if self.state != NodeState.LEADER:
             return False
-        
+
         # if successful then update next_index and match_index
         if data.success:
             last_sent = filled_RPC.prev_log_index + len(filled_RPC.entries)
             self.next_index[peer] = last_sent + 1
             self.match_index[peer] = last_sent
+            self.last_ack[peer] = time.monotonic()
             return True
         # if fails, decrement next_index and try again
         else: 
