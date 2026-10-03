@@ -1,10 +1,11 @@
 # To Do List :)
 
 #### Done
-- Update file writes to use asyncio (save in a thread) so doesn't block heartbeats or RPC handling
+- state_lock now covers the election path, and apply_log commits inside it
 
 #### Next
 - in send_heartbeat don't wait 150ms for full responses
+- fix set_log - currently rewrites the whole log table
 
 #### Later
 - Turn uvicorn auto reload off in the docker containers

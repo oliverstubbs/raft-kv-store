@@ -22,7 +22,7 @@ class RaftNode:
         # volatile state (on all servers)
         self.commit_index: int = 0
 
-        # guards check-then-save in the RPC handlers and apply_log
+        # held by anything that changes term, vote, log, data or state
         self.state_lock = asyncio.Lock()
 
         # last leader
@@ -71,7 +71,9 @@ class RaftNode:
     async def perform_request(self, op: Operation):
         self.check_still_leader()
         old_value = self.storage.get_value(op.key)
-        index = await self.append_log(op)
+        async with self.state_lock:
+            self.check_still_leader()
+            index = await self.append_log(op)
 
         # wait for entry to be applied to the state machine
         while self.storage.get_last_applied() < index:
@@ -113,14 +115,14 @@ class RaftNode:
     def reset_election_timer(self):
         self.election_time_limit = time.monotonic() + random.uniform(self.election_time_min, self.election_time_max)
 
+    # adopt a newer term seen from a peer and revert to follower
     async def step_down(self, term: int):
-        # adopt a newer term seen from a peer and revert to follower
-        await self.storage.set_current_term(term)
-        await self.storage.set_voted_for(None)
+        # update volatile state then save updated
         self.state = NodeState.FOLLOWER
         self.leader_id = None
         self.next_index = None
         self.match_index = None
+        await self.storage.set_term_and_vote(term, None)
 
     async def become_leader(self):
         self.state = NodeState.LEADER
@@ -150,29 +152,34 @@ class RaftNode:
             self.state = NodeState.FOLLOWER
             return
 
-        await self.storage.increment_current_term()
-        await self.storage.set_voted_for(self.node_id)
-        term = self.storage.get_current_term()
+        # update term and vote
+        async with self.state_lock:
+            if self.state != NodeState.CANDIDATE:
+                print(f"node {self.node_id}: no longer a candidate - abandoning election")
+                return
+            term = self.storage.get_current_term() + 1
+            await self.storage.set_term_and_vote(term, self.node_id)
 
         # send vote requests to all other servers
         responses = await self.send_vote_requests()
 
-        # check still valid to become leader
-        if self.state != NodeState.CANDIDATE or self.storage.get_current_term() != term:
-            print(f"node {self.node_id}: no longer a candidate for term {term} - abandoning election")
-            return
+        async with self.state_lock:
+            # check still valid to become leader
+            if self.state != NodeState.CANDIDATE or self.storage.get_current_term() != term:
+                print(f"node {self.node_id}: no longer a candidate for term {term} - abandoning election")
+                return
 
-        # check if any peer is on a higher term, if so then we are behind and should step down
-        highest_term = max((res.term for res in responses), default=0)
-        if highest_term > self.storage.get_current_term():
-            print(f"node {self.node_id}: saw term {highest_term} in a vote response - stepping down")
-            await self.step_down(highest_term)
-            return
+            # check if any peer is on a higher term, if so then we are behind and should step down
+            highest_term = max((res.term for res in responses), default=0)
+            if highest_term > term:
+                print(f"node {self.node_id}: saw term {highest_term} in a vote response - stepping down")
+                await self.step_down(highest_term)
+                return
 
-        # check if have maj of votes to become leader
-        votes = sum(1 for res in responses if res.vote_granted)
-        if self.has_majority(votes):
-            await self.become_leader()
+            # check if have maj of votes to become leader
+            votes = sum(1 for res in responses if res.vote_granted)
+            if self.has_majority(votes):
+                await self.become_leader()
 
     async def run_node(self):
         self.reset_election_timer()
@@ -218,15 +225,20 @@ class RaftNode:
         return sum(acks)
                 
     async def send_log(self, peer: str, client: httpx.AsyncClient) -> bool:
+        if self.state != NodeState.LEADER:
+            return False
         filled_RPC = self.build_append_entries(peer)
-        
+
         try:
             res = await client.post(f"http://{peer}/append_entries", json=filled_RPC.model_dump())
             data = AppendEntriesResponse(**res.raise_for_status().json())
         except httpx.HTTPError:
             return False
-        
-        if await self.step_down_if_behind(data.term) or self.state != NodeState.LEADER:
+
+        async with self.state_lock:
+            if await self.step_down_if_behind(data.term):
+                return False
+        if self.state != NodeState.LEADER:
             return False
         
         # if successful then update next_index and match_index
@@ -342,21 +354,22 @@ class RaftNode:
                 return AppendEntriesResponse(term=current_term, success=False)
 
             # delete any conflicting entries and append the new entries
-            log = self.get_log()
             index = req.prev_log_index + 1
-            for entry in req.entries:
-                if index <= len(log):
-                    # check if an existing entry conflicts with a new one
-                    if log[index - 1].term != entry.term:
-                        # delete existing entry and all that follow it
-                        log = log[: index - 1]
+            if req.entries:
+                log = self.get_log()
+                for entry in req.entries:
+                    if index <= len(log):
+                        # check if an existing entry conflicts with a new one
+                        if log[index - 1].term != entry.term:
+                            # delete existing entry and all that follow it
+                            log = log[: index - 1]
+                            log.append(entry)
+                    # otherwise past the end, so can just add to end of log
+                    else:
                         log.append(entry)
-                # otherwise past the end, so can just add to end of log
-                else:
-                    log.append(entry)
-                index += 1
-            await self.storage.set_log(log)     
-        
+                    index += 1
+                await self.storage.set_log(log)
+
             if req.leader_commit > self.commit_index:
                 self.commit_index = min(req.leader_commit, index-1)
 
@@ -370,8 +383,9 @@ class RaftNode:
                 return
 
             # loop through all logs and write them to disk
+            log = self.get_log()
             while self.commit_index > last_applied:
-                op = self.get_log()[last_applied].operation
+                op = log[last_applied].operation
                 print(f"node {self.node_id}: applying {last_applied + 1} ({op.type})")
                 match op.type:
                     case "PUT":
@@ -382,5 +396,5 @@ class RaftNode:
                         pass
                 last_applied += 1
 
-        # actually save it
-        await self.storage.set_last_applied(last_applied)
+            # actually save it
+            await self.storage.set_last_applied(last_applied)

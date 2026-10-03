@@ -77,12 +77,11 @@ class Storage:
     def get_current_term(self):
         return self.db_conn.execute("SELECT current_term FROM raft_state WHERE id = 1").fetchone()[0]
 
-    async def set_current_term(self, term: int):
-        self.db_conn.execute("UPDATE raft_state SET current_term = ? WHERE id = 1", (term,))
-        await self.save()
-
-    async def increment_current_term(self):
-        self.db_conn.execute("UPDATE raft_state SET current_term = current_term + 1 WHERE id = 1")
+    async def set_term_and_vote(self, term: int, candidate_id: str | None):
+        self.db_conn.execute(
+            "UPDATE raft_state SET current_term = ?, voted_for = ? WHERE id = 1",
+            (term, candidate_id),
+        )
         await self.save()
 
     def get_voted_for(self):
