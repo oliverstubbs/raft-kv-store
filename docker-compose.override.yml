@@ -1,0 +1,21 @@
+# for local development
+
+services:
+  node1:
+    volumes:
+      - .:/app
+    environment:
+      DEBUG_ENDPOINTS: "1"
+    command: ["uv", "run", "uvicorn", "server:server", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+  node2:
+    volumes:
+      - .:/app
+    environment:
+      DEBUG_ENDPOINTS: "1"
+    command: ["uv", "run", "uvicorn", "server:server", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+  node3:
+    volumes:
+      - .:/app
+    environment:
+      DEBUG_ENDPOINTS: "1"
+    command: ["uv", "run", "uvicorn", "server:server", "--host", "0.0.0.0", "--port", "8000", "--reload"]

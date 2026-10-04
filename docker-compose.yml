@@ -5,7 +5,6 @@ services:
     ports:
       - "8001:8000"
     volumes:
-      - .:/app
       - node1_data:/data
     environment:
       NODE_ID: 1
@@ -17,7 +16,6 @@ services:
     ports:
       - "8002:8000"
     volumes:
-      - .:/app
       - node2_data:/data
     environment:
       NODE_ID: 2
@@ -29,7 +27,6 @@ services:
     ports:
       - "8003:8000"
     volumes:
-      - .:/app
       - node3_data:/data
     environment:
       NODE_ID: 3

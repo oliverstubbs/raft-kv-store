@@ -44,13 +44,15 @@ async def delete_value(key: str):
     old_val = await raft_node.delete_value(key)
     return {"key": key, "old_value": old_val}
 
-@server.get("/entrySet")
-async def get_entrySet():
-    return raft_node.get_all_values()
+# debugging routes
+if os.getenv("DEBUG_ENDPOINTS"):
+    @server.get("/entrySet")
+    async def get_entrySet():
+        return raft_node.get_all_values()
 
-@server.get("/temp/log")
-async def get_log():
-    return raft_node.get_log()
+    @server.get("/temp/log")
+    async def get_log():
+        return raft_node.get_log()
 
 @server.post("/request_vote")
 async def request_vote(request: RequestVoteRequest) -> RequestVoteResponse:

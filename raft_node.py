@@ -218,7 +218,7 @@ class RaftNode:
                 try:
                     await self.apply_log()
                 except Exception:
-                    print(f"node {self.node_id}: errror in run_node applying log")
+                    print(f"node {self.node_id}: error in run_node applying log")
                     traceback.print_exc()
 
                 # handle transition to CANDIDATE state
@@ -226,7 +226,7 @@ class RaftNode:
                     if self.state != NodeState.LEADER and self.election_timed_out():
                         await self.run_election()
                 except Exception:
-                    print(f"node {self.node_id}: errror in run_node running election")
+                    print(f"node {self.node_id}: error in run_node running election")
                     traceback.print_exc()
                     
                 await asyncio.sleep(0.01)
@@ -241,7 +241,7 @@ class RaftNode:
                     self.rounds.add(round)
                     round.add_done_callback(self.rounds.discard)
             except Exception:
-                print(f"node {self.node_id}: errror in heartbeat_loop")
+                print(f"node {self.node_id}: error in heartbeat_loop")
                 traceback.print_exc()
             finally:
                 await asyncio.sleep(self.heartbeat_interval)

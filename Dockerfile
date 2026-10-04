@@ -15,4 +15,4 @@ RUN uv sync --frozen --no-dev
 
 COPY . .
 
-CMD ["uv", "run", "uvicorn", "server:server", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+CMD ["uv", "run", "uvicorn", "server:server", "--host", "0.0.0.0", "--port", "8000"]
