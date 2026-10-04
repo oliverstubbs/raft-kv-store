@@ -19,3 +19,15 @@ services:
     environment:
       DEBUG_ENDPOINTS: "1"
     command: ["uv", "run", "uvicorn", "server:server", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+  node4:
+    volumes:
+      - .:/app
+    environment:
+      DEBUG_ENDPOINTS: "1"
+    command: ["uv", "run", "uvicorn", "server:server", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+  node5:
+    volumes:
+      - .:/app
+    environment:
+      DEBUG_ENDPOINTS: "1"
+    command: ["uv", "run", "uvicorn", "server:server", "--host", "0.0.0.0", "--port", "8000", "--reload"]

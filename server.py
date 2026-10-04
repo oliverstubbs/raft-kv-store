@@ -1,14 +1,21 @@
 import os
 import asyncio
+import hmac
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Header, HTTPException
 from contextlib import asynccontextmanager
 
-from raft_node import RaftNode
+from raft_node import RaftNode, CLUSTER_SECRET
 from models import AppendEntriesRequest, AppendEntriesResponse, RequestVoteRequest, RequestVoteResponse
 
 node_id = os.getenv("NODE_ID", "node")
 raft_node = RaftNode(node_id=node_id)
+
+def verify_peer(secret: str | None = Header(default=None, alias="X-Cluster-Secret")):
+    if not CLUSTER_SECRET:
+        return
+    if secret is None or not hmac.compare_digest(secret, CLUSTER_SECRET):
+        raise HTTPException(status_code=403, detail="bad or missing cluster secret")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -26,8 +33,12 @@ async def lifespan(app: FastAPI):
 server = FastAPI(lifespan=lifespan)
 
 @server.get("/")
-def read_root():
-    return {}
+async def read_root():
+    return {
+        "node_id": raft_node.node_id,
+        "state": raft_node.state.value,
+        "leader_id": raft_node.leader_id,
+    }
 
 @server.get("/value/{key}")
 async def get_value(key: str):
@@ -54,10 +65,10 @@ if os.getenv("DEBUG_ENDPOINTS"):
     async def get_log():
         return raft_node.get_log()
 
-@server.post("/request_vote")
+@server.post("/request_vote", dependencies=[Depends(verify_peer)])
 async def request_vote(request: RequestVoteRequest) -> RequestVoteResponse:
     return await raft_node.handle_vote_request(request)
 
-@server.post("/append_entries")
+@server.post("/append_entries", dependencies=[Depends(verify_peer)])
 async def append_entries(request: AppendEntriesRequest) -> AppendEntriesResponse:
     return await raft_node.handle_append_entries(request)

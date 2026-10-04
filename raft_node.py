@@ -9,6 +9,9 @@ import httpx
 from models import AppendEntriesRequest, AppendEntriesResponse, NodeState, Operation, LogEntry, RequestVoteRequest, RequestVoteResponse
 from storage import Storage
 
+CLUSTER_SECRET = os.getenv("CLUSTER_SECRET", "")
+PEER_HEADERS = {"X-Cluster-Secret": CLUSTER_SECRET} if CLUSTER_SECRET else {}
+
 class RaftNode:
     def __init__(self, node_id: str):
         self.node_id = node_id
@@ -90,7 +93,13 @@ class RaftNode:
     
     def check_still_leader(self):
         if self.state != NodeState.LEADER:
-            raise HTTPException(status_code=421, detail="lost leadership")
+            raise self.not_leader_exception()
+        
+    def not_leader_exception(self) -> HTTPException:
+        return HTTPException(
+            status_code = 421,
+            detail = {"error": "not leader", "leader_id": self.leader_id}
+        )
 
     def has_majority(self, peer_count: int) -> bool:
         # peer_count excludes this node, which always counts itself
@@ -106,7 +115,7 @@ class RaftNode:
                 return
             await asyncio.sleep(0.01)
 
-        raise HTTPException(status_code=421, detail="lost leadership")
+        raise self.not_leader_exception()
 
     async def wait_until_applied(self, index: int):
         deadline = time.monotonic() + self.apply_timeout
@@ -261,7 +270,7 @@ class RaftNode:
         )
 
     async def send_heartbeat(self) -> int:
-        async with httpx.AsyncClient(timeout=self.rpc_timeout) as client:
+        async with httpx.AsyncClient(timeout=self.rpc_timeout, headers=PEER_HEADERS) as client:
             acks = await asyncio.gather(*(self.send_log(peer, client) for peer in self.peers))
             
         # double check still a leader
@@ -380,7 +389,7 @@ class RaftNode:
         )
         json = req.model_dump()
         
-        async with httpx.AsyncClient(timeout=self.rpc_timeout) as client:
+        async with httpx.AsyncClient(timeout=self.rpc_timeout, headers=PEER_HEADERS) as client:
             results = await asyncio.gather(
                 *(self.send_vote_request(peer, client, json) for peer in self.peers)
             )

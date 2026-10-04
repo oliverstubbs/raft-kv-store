@@ -9,7 +9,8 @@ services:
     environment:
       NODE_ID: 1
       DB_PATH: /data/raft.db
-      PEERS: node2:8000,node3:8000
+      CLUSTER_SECRET: ${CLUSTER_SECRET-}
+      PEERS: node2:8000,node3:8000,node4:8000,node5:8000
   node2:
     build: .
     container_name: node2
@@ -20,7 +21,8 @@ services:
     environment:
       NODE_ID: 2
       DB_PATH: /data/raft.db
-      PEERS: node1:8000,node3:8000
+      CLUSTER_SECRET: ${CLUSTER_SECRET-}
+      PEERS: node1:8000,node3:8000,node4:8000,node5:8000
   node3:
     build: .
     container_name: node3
@@ -31,9 +33,36 @@ services:
     environment:
       NODE_ID: 3
       DB_PATH: /data/raft.db
-      PEERS: node1:8000,node2:8000
+      CLUSTER_SECRET: ${CLUSTER_SECRET-}
+      PEERS: node1:8000,node2:8000,node4:8000,node5:8000
+  node4:
+    build: .
+    container_name: node4
+    ports:
+      - "8004:8000"
+    volumes:
+      - node4_data:/data
+    environment:
+      NODE_ID: 4
+      DB_PATH: /data/raft.db
+      CLUSTER_SECRET: ${CLUSTER_SECRET-}
+      PEERS: node1:8000,node2:8000,node3:8000,node5:8000
+  node5:
+    build: .
+    container_name: node5
+    ports:
+      - "8005:8000"
+    volumes:
+      - node5_data:/data
+    environment:
+      NODE_ID: 5
+      DB_PATH: /data/raft.db
+      CLUSTER_SECRET: ${CLUSTER_SECRET-}
+      PEERS: node1:8000,node2:8000,node3:8000,node4:8000
 
 volumes:
   node1_data:
   node2_data:
   node3_data:
+  node4_data:
+  node5_data:
