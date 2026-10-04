@@ -133,3 +133,6 @@ class Storage:
         """)
                   
         self.db_conn.commit()
+        
+    def close_db_connection(self):
+        self.db_conn.close()

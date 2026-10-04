@@ -21,6 +21,7 @@ async def lifespan(app: FastAPI):
         await node_loop
     except asyncio.CancelledError:
         print("Shutdown complete.")
+    raft_node.storage.close_db_connection()
     
 server = FastAPI(lifespan=lifespan)
 

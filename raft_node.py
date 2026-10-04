@@ -2,6 +2,7 @@ import os
 import random
 import time
 import asyncio
+import traceback
 from fastapi import HTTPException
 import httpx
 
@@ -42,9 +43,11 @@ class RaftNode:
         self.election_time_limit = 0
         self.election_time_min = 0.15
         self.election_time_max = 0.3
+        
+        # other timers
         self.heartbeat_interval = 0.05
         self.rpc_timeout = 0.1
-        
+        self.apply_timeout = 10
 
     # data store operations
     
@@ -60,10 +63,8 @@ class RaftNode:
         await self.wait_for_majority_ack()
 
         # ensure we are caught up
-        while self.storage.get_last_applied() < temp:
-            self.check_still_leader()
-            await asyncio.sleep(0.01)
-        
+        await self.wait_until_applied(temp)
+
         return self.storage.get_value(key, default)
 
     async def set_value(self, key: str, value: str):
@@ -80,9 +81,7 @@ class RaftNode:
             index = await self.append_log(op)
 
         # wait for entry to be applied to the state machine
-        while self.storage.get_last_applied() < index:
-            self.check_still_leader()
-            await asyncio.sleep(0.01)
+        await self.wait_until_applied(index)
 
         return old_value
 
@@ -108,6 +107,14 @@ class RaftNode:
             await asyncio.sleep(0.01)
 
         raise HTTPException(status_code=421, detail="lost leadership")
+
+    async def wait_until_applied(self, index: int):
+        deadline = time.monotonic() + self.apply_timeout
+        while self.storage.get_last_applied() < index:
+            self.check_still_leader()
+            if time.monotonic() > deadline:
+                raise HTTPException(status_code=503, detail="entry not applied in time")
+            await asyncio.sleep(0.01)
 
     # log operations
 
@@ -203,25 +210,41 @@ class RaftNode:
 
     async def run_node(self):
         self.reset_election_timer()
-        asyncio.create_task(self.heartbeat_loop())
+        heartbeat = asyncio.create_task(self.heartbeat_loop())
+        
+        try:
+            while True:
+                # check if need to apply log
+                try:
+                    await self.apply_log()
+                except Exception:
+                    print(f"node {self.node_id}: errror in run_node applying log")
+                    traceback.print_exc()
 
-        while True:
-            # check if need to apply log
-            await self.apply_log()
-
-            # handle transition to CANDIDATE state
-            if self.state != NodeState.LEADER and self.election_timed_out():
-                await self.run_election()
-
-            await asyncio.sleep(0.01)
+                # handle transition to CANDIDATE state
+                try:
+                    if self.state != NodeState.LEADER and self.election_timed_out():
+                        await self.run_election()
+                except Exception:
+                    print(f"node {self.node_id}: errror in run_node running election")
+                    traceback.print_exc()
+                    
+                await asyncio.sleep(0.01)
+        finally:
+            heartbeat.cancel()
 
     async def heartbeat_loop(self):
         while True:
-            if self.state == NodeState.LEADER:
-                round = asyncio.create_task(self.send_heartbeat())
-                self.rounds.add(round)
-                round.add_done_callback(self.rounds.discard)
-            await asyncio.sleep(self.heartbeat_interval)
+            try:
+                if self.state == NodeState.LEADER:
+                    round = asyncio.create_task(self.send_heartbeat())
+                    self.rounds.add(round)
+                    round.add_done_callback(self.rounds.discard)
+            except Exception:
+                print(f"node {self.node_id}: errror in heartbeat_loop")
+                traceback.print_exc()
+            finally:
+                await asyncio.sleep(self.heartbeat_interval)
 
     def build_append_entries(self, peer: str) -> AppendEntriesRequest:
         log = self.storage.get_log()
