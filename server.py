@@ -57,11 +57,11 @@ async def delete_value(key: str):
 
 # debugging routes
 if os.getenv("DEBUG_ENDPOINTS"):
-    @server.get("/entrySet")
-    async def get_entrySet():
+    @server.get("/debug/data")
+    async def get_data():
         return raft_node.get_all_values()
 
-    @server.get("/temp/log")
+    @server.get("/debug/log")
     async def get_log():
         return raft_node.get_log()
 
