@@ -1,14 +1,10 @@
 # To Do List :)
 
 #### Done
-- add two more nodes to dockercompose
-- add shared secret for append_entries and request_vote
-- add client.py example
-- update read_root
+- add README
 
 #### Next
-- add README
+- faster log backtracking 
 
 #### Later
 - snapshots
-- faster log backtracking 
