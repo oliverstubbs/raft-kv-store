@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from raft_node import RaftNode, CLUSTER_SECRET
 from models import AppendEntriesRequest, AppendEntriesResponse, RequestVoteRequest, RequestVoteResponse
 
-node_id = os.getenv("NODE_ID", "node")
+node_id = os.environ["NODE_ID"]
 raft_node = RaftNode(node_id=node_id)
 
 def verify_peer(secret: str | None = Header(default=None, alias="X-Cluster-Secret")):
