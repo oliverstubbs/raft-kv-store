@@ -1,7 +1,7 @@
 # To Do List :)
 
 #### Done
-- add README
+- add tests
 
 #### Next
 - faster log backtracking 
