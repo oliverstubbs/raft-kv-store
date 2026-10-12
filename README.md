@@ -72,6 +72,25 @@ docker compose down -v
 
 Omit `-v` to keep the data - each node will pick its log and data back up on the next start.
 
+## Tests
+
+```bash
+uv run pytest
+```
+
+The test suite calls the node's methods directly (instead of interacting with the individual containers and their ecosystem using HTTP). Each test uses its own `RaftNode` with its own temporary SQLite file. It is also configured with the addresses of four other nodes (that don't exist), so the majority arithmetic matches the real five-node cluster. 
+
+| Test File                 | Covers |
+| ------------------------- | ------ |
+| `test_append_entries.py`  | Term handling, the log consistency check, truncation and `commit_index` |
+| `test_request_vote.py`    | One vote per term, the log-up-to-date rule, and pre-vote |
+| `test_commit_index.py`    | The majority arithmetic deciding what is committed |
+| `test_apply_log.py`       | Committed entries reaching the data table - once, in order, in one commit |
+| `test_storage.py`         | Log density across truncation, write-through, and the commit boundaries |
+| `test_client_contract.py` | The 421 and 503 responses a client actually sees |
+
+Elections and failover are not covered, since driving them over HTTP is slow and timing dependent. [`demo_failover.py`](demo_failover.py) is the test for that behaviour. Two things are also left: the leader's handling of `append_entries` replies (as it requires an HTTP client), and the 403 error on a missing `X-Cluster-Secret` (as it requires the FastAPI routes).
+
 ## API
 
 ### Client Endpoints
@@ -179,12 +198,13 @@ sequenceDiagram
 
 | File                 | Description                                                       |
 | -------------------- | ----------------------------------------------------------------- |
-| `raft_node.py`       | All consensus logic - elections, replication, and the loops below  |
-| `storage.py`         | SQLite persistence for the data, log and term/vote state           |
-| `models.py`          | Pydantic models for the RPCs, log entries and node state           |
-| `server.py`          | FastAPI routes, and the lifespan that starts the node loops        |
-| `client.py`          | Example client - follows 421s to find the leader                   |
-| `demo_failover.py`   | Kills the leader mid-run and checks the write survives             |
+| `raft_node.py`       | All consensus logic - elections, replication, and the loops below |
+| `storage.py`         | SQLite persistence for the data, log and term/vote state          |
+| `models.py`          | Pydantic models for the RPCs, log entries and node state          |
+| `server.py`          | FastAPI routes, and the lifespan that starts the node loops       |
+| `client.py`          | Example client - follows 421s to find the leader                  |
+| `demo_failover.py`   | Kills the leader mid-run and checks the write survives            |
+| `tests/`             | Unit tests for the consensus logic - see [Tests](#tests)          |
 
 ### Node Loops
 
@@ -192,24 +212,24 @@ In `raft_node.py` the `run_node()` function starts two asyncio tasks:
 - `heartbeat_loop()` fires a replication round every 50ms while this node is the leader, sending each follower the entries it is missing
 - `run_node()` itself applies any committed entries and runs the randomised 150-300ms election timer, starting an election if no leader has been heard from
 
-They are separate tasks on purpose. If run sequentially, the lock held while entries are applied can block heartbeats from being sent. This meant that the gaps between heartbeats were long enough to pass the election timeout, which cost a healthy leader its leadership. Concurent tasks allow heartbeats to be sent while logs are updated.
+They are separate tasks on purpose. If run sequentially, the lock held while entries are applied can block heartbeats from being sent. This meant that the gaps between heartbeats were long enough to pass the election timeout, which cost a healthy leader its leadership. Concurrent tasks allow heartbeats to be sent while logs are updated.
 
 ### Elections
 
-A node that hasn't heard from a leader before its election timer runs out campaigns for the term itself. Before touching its own term it sends a round of `request_vote` with `pre_vote=True`, carrying the term it *would* move to. Peers answer as if the request were real but change nothing, and only if a majority would vote for it does the candidate increment its term and run the election for real. This means a node that was paused or partitioned can rejoin without bumping the term and deposing a healthy leader. Pre-vote is an extention to standard raft, which comes from §9.6 of Ongaro's "[Consensus: Bridging Theory and Practice](https://web.stanford.edu/~ouster/cgi-bin/papers/OngaroPhD.pdf)".
+A node that hasn't heard from a leader before its election timer runs out campaigns for the term itself. Before touching its own term it sends a round of `request_vote` with `pre_vote=True`, carrying the term it *would* move to. Peers answer as if the request were real but change nothing, and only if a majority would vote for it does the candidate increment its term and run the election for real. This means a node that was paused or partitioned can rejoin without bumping the term and deposing a healthy leader. Pre-vote is an extension to standard Raft, which comes from §9.6 of Ongaro's "[Consensus: Bridging Theory and Practice](https://web.stanford.edu/~ouster/cgi-bin/papers/OngaroPhD.pdf)".
 
 A new leader's first act is to append a `NOOP` entry, which is what lets entries inherited from an earlier term commit without waiting for the next client write to come along.
 
 ### Reads from the Leader
 
-Reads go through the leader, which confirms a majority is still following it before answering - a leader that has been deposed but hasn't noticed yet shoudln't serve stale data. If a majority hasn't acknowledged within an election timeout the read is refused with a 421, and that 421 names this node, which is why a client has to cap its retries (see [Finding the Leader](#finding-the-leader)).
+Reads go through the leader, which confirms a majority is still following it before answering - a leader that has been deposed but hasn't noticed yet shouldn't serve stale data. If a majority hasn't acknowledged within an election timeout the read is refused with a 421, and that 421 names this node, which is why a client has to cap its retries (see [Finding the Leader](#finding-the-leader)).
 
 ### Storage
 
 A single SQLite file composed of three tables is used to store data: 
 - `data` stores the key value pairs
 - `log` stores the log of operations, stored to disk for durability
-- `raft_state` stores the other persistant state (`current_term` and `voted_for`) as well as `last_applied`
+- `raft_state` stores the other persistent state (`current_term` and `voted_for`) as well as `last_applied`
 
 Worth knowing:
 - `last_applied` is updated in the same transaction as the data it applies, so a crash can't leave the two disagreeing
